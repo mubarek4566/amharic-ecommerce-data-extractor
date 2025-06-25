@@ -19,16 +19,13 @@ class MetricsCallback(TrainerCallback):
         if logs is not None:
             self.metrics.append(logs)
 
-
-class NERModelComparison:
-    def __init__(self, dataset_path, model_names, tokenizer_names):
+class NERModelExplainability:
+    def __init__(self, dataset_path, model_name, tokenizer_name):
         self.dataset_path = dataset_path
-        self.model_names = model_names
-        self.tokenizer_names = tokenizer_names
+        self.model_name = model_name
+        self.tokenizer_name = tokenizer_name
         self.label2id = {}
         self.id2label = {}
-        self.best_model = None
-        self.best_metrics = {}
 
     def load_conll_data(self, filepath):
         data = []
@@ -45,7 +42,7 @@ class NERModelComparison:
                         tokens, labels = [], []
         return pd.DataFrame(data)
 
-    def tokenize_and_align_labels(self, examples, tokenizer, model_name):
+    def tokenize_and_align_labels(self, examples, tokenizer):
         tokenized_inputs = tokenizer(
             examples['tokens'],
             truncation=True,
@@ -64,12 +61,7 @@ class NERModelComparison:
                 if word_idx is None:
                     label_ids.append(-100)
                 elif word_idx != previous_word_idx:
-                    if model_name == "xlm-roberta-base":
-                        label_ids.append(self.label2id.get(label[word_idx], -1))
-                    elif model_name in ["distilbert-base-uncased", "bert-base-multilingual-cased"]:
-                        label_ids.append(self.label2id.get(label[word_idx], -1))
-                    else:
-                        label_ids.append(self.label2id.get(label[word_idx], -1))
+                    label_ids.append(self.label2id.get(label[word_idx], -1))
                 else:
                     label_ids.append(-100)
 
@@ -88,13 +80,18 @@ class NERModelComparison:
         val_dataset = Dataset.from_pandas(val_df)
         dataset = DatasetDict({"train": train_dataset, "validation": val_dataset})
 
-        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_names[0])
+        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
 
         unique_labels = set(tag for tags in dataset['train']['ner_tags'] for tag in tags)
         self.label2id = {label: idx for idx, label in enumerate(unique_labels)}
         self.id2label = {idx: label for label, idx in self.label2id.items()}
 
-        return dataset
+        tokenized_datasets = dataset.map(
+            lambda examples: self.tokenize_and_align_labels(examples, tokenizer),
+            batched=True
+        )
+
+        return tokenized_datasets
 
     def compute_metrics(self, pred):
         predictions, labels = pred
@@ -108,90 +105,56 @@ class NERModelComparison:
             average="weighted"
         )
         return {"precision": precision, "recall": recall, "eval_f1": f1}
-    
-    def train_and_evaluate(self, model_name, tokenizer_name, tokenized_datasets):
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+
+    def train_and_save_model(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
         model = AutoModelForTokenClassification.from_pretrained(
-            model_name,
+            self.model_name,
             num_labels=len(self.label2id),
             id2label=self.id2label,
-            label2id=self.label2id,
-            ignore_mismatched_sizes=True  # Suppress the weight initialization warning
+            label2id=self.label2id
         )
 
-        # Remove unused columns to avoid warnings
-        tokenized_datasets = tokenized_datasets.remove_columns(["tokens", "__index_level_0__", "ner_tags"])
-        
+        dataset = self.load_and_prepare_data()
+
+        # Check dataset structure
+        print("Sample training data:", dataset["train"][0])
+
+        dataset = dataset.remove_columns(["tokens", "__index_level_0__", "ner_tags"])
+
         args = TrainingArguments(
-            output_dir=f"./results_{model_name}",
-            eval_strategy="epoch",  # Updated for deprecation warning
+            output_dir=f"./results_{self.model_name}",
+            eval_strategy="epoch",
             learning_rate=2e-5,
             per_device_train_batch_size=8,
             per_device_eval_batch_size=8,
             num_train_epochs=3,
             weight_decay=0.01,
-            logging_dir=f"./logs_{model_name}",
+            logging_dir=f"./logs_{self.model_name}",
             save_strategy="epoch",
-            logging_steps=5,  # Ensure logging happens every 5 steps
-            log_level="info",   # Ensure logging is enabled
-            report_to="none"   # Avoid reporting to any external system (optional)
+            logging_steps=5
         )
 
-        # Use DataCollatorForTokenClassification for batching
         data_collator = DataCollatorForTokenClassification(tokenizer)
-
         metrics_callback = MetricsCallback()
+
         trainer = Trainer(
             model=model,
             args=args,
-            train_dataset=tokenized_datasets["train"],
-            eval_dataset=tokenized_datasets["validation"],
-            data_collator=data_collator,  # Replace `tokenizer` with `data_collator`
+            train_dataset=dataset["train"],
+            eval_dataset=dataset["validation"],
+            data_collator=data_collator,
             compute_metrics=self.compute_metrics,
             callbacks=[metrics_callback]
         )
 
-        start_time = time.time()
-        trainer.train()
-        training_time = time.time() - start_time
+        print(f"Training {self.model_name}...")
+        try:
+            trainer.train()
+        except Exception as e:
+            print("Error during training:", str(e))
 
-        eval_results = trainer.evaluate()
-        return eval_results, training_time, metrics_callback.metrics
-
-    def compare_models(self):
-        best_model = None
-        best_f1 = 0
-        best_model_name = None
-        best_training_time = float("inf")
-
-        for model_name, tokenizer_name in zip(self.model_names, self.tokenizer_names):
-            print(f"Training and evaluating {model_name}...")
-
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-            dataset = self.load_and_prepare_data()
-            tokenized_datasets = dataset.map(
-                lambda examples: self.tokenize_and_align_labels(
-                    examples, tokenizer, model_name=model_name
-                ),
-                batched=True
-            )
-
-            eval_results, training_time, epoch_metrics = self.train_and_evaluate(
-                model_name, tokenizer_name, tokenized_datasets
-            )
-
-            print(f"{model_name} Evaluation Results: {eval_results}")
-            print(f"{model_name} Training Time: {training_time} seconds")
-            print(f"{model_name} Epoch Metrics:")
-            for epoch, metrics in enumerate(epoch_metrics, 1):
-                print(f"Epoch {epoch}: {metrics}")
-
-            if eval_results['eval_f1'] > best_f1 and training_time < best_training_time:
-                best_f1 = eval_results['eval_f1']
-                best_training_time = training_time
-                best_model = model_name
-
-        self.best_model = best_model
-        self.best_metrics = {'eval_f1': best_f1, 'training_time': best_training_time}
-        print(f"Best Model: {self.best_model}")
-        print(f"Best Metrics: {self.best_metrics}")
+        print("Saving model and tokenizer for explainability...")
+        model.save_pretrained(f"./saved_model_{self.model_name}")
+        tokenizer.save_pretrained(f"./saved_model_{self.model_name}")
+        print(f"Model and tokenizer saved to ./saved_model_{self.model_name}")
