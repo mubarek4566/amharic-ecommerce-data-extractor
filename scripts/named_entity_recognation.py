@@ -6,9 +6,6 @@ class CoNLLLabeler:
     def __init__(self, dataset: pd.DataFrame, labeled_data: pd.DataFrame):
         """
         Initializes the CoNLLLabeler with the dataset and labeled tokens in DataFrame format.
-
-        :param dataset: DataFrame containing the messages.
-        :param labeled_data: DataFrame containing tokens and their corresponding labels.
         """
         self.dataset = dataset  # Load dataset
         self.labeled_data = labeled_data  # Labeled tokens in DataFrame format
@@ -20,9 +17,6 @@ class CoNLLLabeler:
     def tokenize_message(self, message: str) -> List[str]:
         """
         Tokenizes a message into individual words/tokens.
-
-        :param message: The input message.
-        :return: A list of tokens.
         """
         # Split message into tokens using whitespace and punctuation
         tokens = re.findall(r'\w+|[^\s\w]', message)
@@ -31,9 +25,6 @@ class CoNLLLabeler:
     def label_tokens(self, tokens: List[str]) -> List[Tuple[str, str]]:
         """
         Labels tokens in a message based on predefined labeled tokens.
-
-        :param tokens: A list of tokens to label.
-        :return: A list of tuples with tokens and their labels.
         """
         labeled_output = []
         for token in tokens:
@@ -45,9 +36,6 @@ class CoNLLLabeler:
     def process_messages(self, num_messages: int) -> List[str]:
         """
         Processes a subset of messages, tokenizes and labels them in CoNLL format.
-
-        :param num_messages: The number of messages to process.
-        :return: A list of labeled messages in CoNLL format.
         """
         labeled_messages = []
         for message in self.messages[:num_messages]:  # Process the specified number of messages
@@ -62,9 +50,6 @@ class CoNLLLabeler:
     def save_conll_format(self, labeled_messages: List[str], output_path: str):
         """
         Saves the labeled messages in CoNLL format to a text file.
-
-        :param labeled_messages: A list of labeled messages in CoNLL format.
-        :param output_path: The file path to save the CoNLL format data.
         """
         with open(output_path, "w", encoding="utf-8") as file:
             # Separate messages with a blank line
